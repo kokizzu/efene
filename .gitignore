@@ -1,6 +1,8 @@
 *.beam
 fn_lexer.erl
 fn_parser.erl
+aleppo_parser.erl
+rebar.lock
 src/*.fn
 erl_crash.dump
 .*.swp
@@ -22,3 +24,5 @@ scratch.erl
 examples/scratch.fn
 _build
 .rebar3
+# separately-cloned plugin repo nested in this working tree
+/rebar3_efene/
