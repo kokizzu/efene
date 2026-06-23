@@ -26,3 +26,8 @@ _build
 .rebar3
 # separately-cloned plugin repo nested in this working tree
 /rebar3_efene/
+# separately-cloned website repo (source for guides/, see scripts/convert_docs.sh)
+/efene.github.io/
+# ex_doc generated output
+/doc/
+rebar3.crashdump

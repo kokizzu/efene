@@ -6,6 +6,6 @@
     {applications, [kernel, stdlib]},
 
     {maintainers, ["Mariano Guerra"]},
-    {licenses, ["APL 2.0"]},
+    {licenses, ["Apache-2.0"]},
     {links, [{"Github", "https://github.com/efene/efene"}]}
 ]}.
