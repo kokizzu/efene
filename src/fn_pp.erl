@@ -33,18 +33,35 @@
 	       sub_indent = 2     :: non_neg_integer(),
            exports_all = false,
            exports = #{},
+           % {Name, Arity} => spec function types / fn_attrs, collected in a
+           % pre-pass so they can be rendered inside their `fn` block instead
+           % of being dropped (see collect_fn_meta/2, pp_fn_annotations/3)
+           specs = #{},
+           fnattrs = #{},
 	       break_indent = 4   :: non_neg_integer(),
 	       paper = ?PAPER     :: integer(),
 	       ribbon = ?RIBBON   :: integer()}).
 
 layout(V) -> layout(V, default_ctx()).
 
-layout(V, Ctx) when is_list(V) -> pp_mod(V, Ctx);
+layout(V, Ctx) when is_list(V) -> pp_mod(V, collect_fn_meta(V, Ctx));
 layout(V, Ctx) -> pp(V, Ctx).
 
 format(V) -> prettypr:format(layout(V), ?PAPER, ?RIBBON).
 
 default_ctx() -> #ctxt{}.
+
+% collect per-function specs and fn_attrs (doc and friends) up front, so they
+% can be attached to their `fn` block rather than dropped or rendered loose
+collect_fn_meta([], Ctx) -> Ctx;
+collect_fn_meta([{attribute, _, spec, {{Name, Arity}, Types}} | Rest],
+                Ctx=#ctxt{specs=Specs}) ->
+    collect_fn_meta(Rest, Ctx#ctxt{specs=Specs#{{Name, Arity} => Types}});
+collect_fn_meta([{attribute, _, fn_attrs, {Name, Arity, Attrs}} | Rest],
+                Ctx=#ctxt{fnattrs=FnAttrs}) ->
+    collect_fn_meta(Rest, Ctx#ctxt{fnattrs=FnAttrs#{{Name, Arity} => Attrs}});
+collect_fn_meta([_ | Rest], Ctx) ->
+    collect_fn_meta(Rest, Ctx).
 
 pp_mod([], _Ctx) -> empty();
 pp_mod([Node | Nodes], Ctx) ->
@@ -316,11 +333,57 @@ pp({function, _, Name, Arity, Clauses}, Ctx) ->
                  true -> besidel([text("\nfn "), quote_atom(Name), text(" @public")]);
                  false -> besidel([text("\nfn "), quote_atom(Name)])
              end,
-    above(Header,
-          above(pp_case_clauses(Clauses, Ctx),
-                text("end")));
+    % @spec/@doc/... annotations live between the `fn` header and the clauses
+    Body = abovel(pp_fn_annotations(Name, Arity, Ctx)
+                  ++ [pp_case_clauses(Clauses, Ctx)]),
+    above(Header, above(Body, text("end")));
 
 pp({eof, _}, _Ctx) -> empty().
+
+% render the @spec and @doc/... annotations of a function as a list of layouts
+% (one per line), to be placed between the `fn` header and its clauses
+pp_fn_annotations(Name, Arity, Ctx) ->
+    Specs = [pp_spec_annotation(T, Ctx)
+             || T <- maps:get({Name, Arity}, Ctx#ctxt.specs, [])],
+    % @public is already shown on the header, so skip it here
+    Attrs = [pp_fn_attr(A, Ctx)
+             || A={Path, _} <- maps:get({Name, Arity}, Ctx#ctxt.fnattrs, []),
+                Path =/= [public]],
+    Specs ++ Attrs.
+
+pp_spec_annotation({type, _, bounded_fun, [FunType, _Constraints]}, Ctx) ->
+    pp_spec_annotation(FunType, Ctx);
+pp_spec_annotation({type, _, 'fun', [{type, _, product, ArgTypes}, RetType]}, Ctx) ->
+    besidel([text("@spec"),
+             wrap_paren(join(ArgTypes, Ctx, fun pp_type/2, comma_f())),
+             text(" -> "), pp_type(RetType, Ctx)]).
+
+% a fn_attr is {[atom(), ...], {Args, Ret}} e.g. {[http, get], {["/p"], json}};
+% Args/Ret are raw terms and Ret == [] means "no -> clause"
+pp_fn_attr({Path, {Args, Ret}}, _Ctx) ->
+    PathTxt = "@" ++ lists:join(".", [atom_to_list(P) || P <- Path]),
+    Head = case Args of
+               [] -> text(PathTxt);
+               _ -> beside(text(PathTxt), wrap_paren(join_terms(Args)))
+           end,
+    case Ret of
+        [] -> Head;
+        _ -> besidel([Head, text(" -> "), pp_term(Ret)])
+    end.
+
+join_terms([T]) -> pp_term(T);
+join_terms([H | T]) -> besidel([pp_term(H), comma_f(), text(" "), join_terms(T)]).
+
+% render a raw Erlang term (fn_attr argument) as efene source
+pp_term(V) when is_atom(V) -> quote_atom(V);
+pp_term(V) when is_integer(V) -> text(integer_to_list(V));
+pp_term(V) when is_float(V) -> text(io_lib:write(V));
+pp_term(V) when is_list(V) ->
+    case io_lib:printable_unicode_list(V) of
+        true -> text(io_lib:write_string(V));
+        false -> wrap_list(join_terms(V))
+    end;
+pp_term(V) -> text(io_lib:write(V)).
 
 pp_bin_es(Es, Ctx) -> join(Es, Ctx, fun pp_bin_e/2, comma_f()).
 
@@ -652,6 +715,16 @@ pp_type({type, _, map, any}, _Ctx) ->
     text("map()");
 pp_type({type, _, list, []}, _Ctx) ->
     text("list()");
+
+% function types: `fun()`, `fun(any, Ret)`, `fun([Arg, ...], Ret)`
+pp_type({type, _, 'fun', []}, _Ctx) ->
+    text("fun()");
+pp_type({type, _, 'fun', [{type, _, any}, RetType]}, Ctx) ->
+    besidel([text("fun(any, "), pp_type(RetType, Ctx), cparen_f()]);
+pp_type({type, _, 'fun', [{type, _, product, Args}, RetType]}, Ctx) ->
+    besidel([text("fun("),
+             wrap_list(join(Args, Ctx, fun pp_type/2, comma_f())),
+             text(", "), pp_type(RetType, Ctx), cparen_f()]);
 
 pp_type({type, _, tuple, [Item]}, Ctx) ->
     wrap_paren(beside(pp_type(Item, Ctx), comma_f()));
